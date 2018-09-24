@@ -92,7 +92,7 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
         supportedLibraries.put("resteasy", "HTTP client: Resteasy client 3.1.3.Final. JSON processing: Jackson 2.8.9");
         supportedLibraries.put("vertx", "HTTP client: VertX client 3.2.4. JSON processing: Jackson 2.8.9");
         supportedLibraries.put("google-api-client", "HTTP client: Google API client 1.23.0. JSON processing: Jackson 2.8.9");
-        supportedLibraries.put("java11", "HTTP client: Java built-in (JEP-321). JSON processing: JSON Binding (JSR-367 with Yasson RI)");
+        supportedLibraries.put("java11", "HTTP client: Java built-in (JEP-321). JSON processing: Jackson 2.8.9");
 
         CliOption libraryOption = new CliOption(CodegenConstants.LIBRARY, "library template (sub-template) to use");
         libraryOption.setEnum(supportedLibraries);
