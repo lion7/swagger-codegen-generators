@@ -1,1 +1,8 @@
-{{^hideGenerationTimestamp}}@javax.annotation.Generated(value = "{{generatorClass}}", date = "{{generatedDate}}"){{/hideGenerationTimestamp}}
+{{^hideGenerationTimestamp}}
+{{#java9}}
+@javax.annotation.processing.Generated(value = "{{generatorClass}}", date = "{{generatedDate}}")
+{{/java9}}
+{{^java9}}
+@javax.annotation.Generated(value = "{{generatorClass}}", date = "{{generatedDate}}")
+{{/java9}}
+{{/hideGenerationTimestamp}}

@@ -92,14 +92,15 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
         supportedLibraries.put("resteasy", "HTTP client: Resteasy client 3.1.3.Final. JSON processing: Jackson 2.8.9");
         supportedLibraries.put("vertx", "HTTP client: VertX client 3.2.4. JSON processing: Jackson 2.8.9");
         supportedLibraries.put("google-api-client", "HTTP client: Google API client 1.23.0. JSON processing: Jackson 2.8.9");
+        supportedLibraries.put("java11", "HTTP client: Java built-in (JEP-321). JSON processing: JSON Binding (JSR-367 with Yasson RI)");
 
         CliOption libraryOption = new CliOption(CodegenConstants.LIBRARY, "library template (sub-template) to use");
         libraryOption.setEnum(supportedLibraries);
         // set okhttp-gson as the default
         libraryOption.setDefault("okhttp-gson");
         cliOptions.add(libraryOption);
-        setLibrary("okhttp-gson");
-
+        library = "okhttp-gson";
+        importMapping.put("Generated", "javax.annotation.Generated");
     }
 
     @Override
@@ -186,7 +187,7 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
         writeOptional(outputFolder, new SupportingFile("manifest.mustache", projectFolder, "AndroidManifest.xml"));
         supportingFiles.add(new SupportingFile("travis.mustache", "", ".travis.yml"));
         supportingFiles.add(new SupportingFile("ApiClient.mustache", invokerFolder, "ApiClient.java"));
-        if(!"resttemplate".equals(getLibrary())) {
+        if(!"resttemplate".equals(getLibrary()) && !"java11".equals(getLibrary())) {
             supportingFiles.add(new SupportingFile("StringUtil.mustache", invokerFolder, "StringUtil.java"));
         }
 
@@ -264,6 +265,10 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
             apiTemplateFiles.put("rxApiImpl.mustache", ".java");
             supportingFiles.remove(new SupportingFile("manifest.mustache", projectFolder, "AndroidManifest.xml"));
         } else if ("google-api-client".equals(getLibrary())) {
+            additionalProperties.put("jackson", "true");
+        } else if ("java11".equals(getLibrary())) {
+            supportingFiles.add(new SupportingFile("JSON.mustache", invokerFolder, "JSON.java"));
+            additionalProperties.put("java9", "true");
             additionalProperties.put("jackson", "true");
         } else {
             LOGGER.error("Unknown library option (-l/--library): " + getLibrary());
