@@ -99,8 +99,8 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
         // set okhttp-gson as the default
         libraryOption.setDefault("okhttp-gson");
         cliOptions.add(libraryOption);
-        library = "okhttp-gson";
-        importMapping.put("Generated", "javax.annotation.Generated");
+        setLibrary("okhttp-gson");
+
     }
 
     @Override
