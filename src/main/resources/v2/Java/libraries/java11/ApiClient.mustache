@@ -3,11 +3,13 @@ package {{invokerPackage}};
 import com.fasterxml.jackson.core.type.TypeReference;
 
 import java.io.*;
+import java.net.URLConnection;
+import java.net.URLEncoder;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
@@ -364,54 +366,194 @@ public class ApiClient {
   }
 
   /**
-   * Serialize the given Java object into string entity according the given Content-Type (only JSON is supported for now).
-   * @param obj Object
-   * @param formParams Form parameters
-   * @param contentType Context type
-   * @return Entity
+   * Invoke API by sending HTTP request with the given options.
+   *
+   * @param <T> Type
+   * @param path The sub-path of the HTTP URL
+   * @param method The request method, one of "GET", "POST", "PUT", "HEAD" and "DELETE"
+   * @param queryParams The query parameters
+   * @param body The request body object
+   * @param headerParams The header parameters
+   * @param formParams The form parameters
+   * @param accept The request's Accept header
+   * @param contentType The request's Content-Type header
+   * @param authNames The authentications to apply
+   * @param returnType The return type into which to deserialize the response
+   * @return The response body in type of string
    * @throws ApiException API exception
    */
-  public InputStream serialize(Object obj, Map<String, Object> formParams, String contentType) {
-    return new ByteArrayInputStream(json.serialize(obj).getBytes());
+  public <T> T invokeAPI(String path, String method, List<Pair> queryParams, Object body, Map<String, String> headerParams, Map<String, Object> formParams, String accept, String contentType, String[] authNames, TypeReference<T> returnType) throws ApiException {
+    updateParamsForAuth(authNames, queryParams, headerParams);
+
+    final String queryString;
+    if(queryParams != null && !queryParams.isEmpty()) {
+        queryString = queryParams.stream()
+            .filter(e -> e.getValue() != null)
+            .map(e -> e.getName() + "=" + e.getValue())
+            .collect(Collectors.joining("&", "?", ""));
+    } else {
+        queryString = "";
+    }
+
+    URI uri = URI.create(this.basePath + path + queryString);
+    HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(uri);
+
+    for (Entry<String, String> entry : headerParams.entrySet()) {
+      String value = entry.getValue();
+      if (value != null) {
+        requestBuilder = requestBuilder.header(entry.getKey(), value);
+      }
+    }
+
+    for (Entry<String, String> entry : defaultHeaderMap.entrySet()) {
+      String key = entry.getKey();
+      if (!headerParams.containsKey(key)) {
+        String value = entry.getValue();
+        if (value != null) {
+          requestBuilder = requestBuilder.header(key, value);
+        }
+      }
+    }
+
+    HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.ofInputStream(() -> {
+      if (contentType.startsWith("multipart/form-data")) {
+        String boundary = UUID.randomUUID().toString();
+        return buildMultipart(boundary, formParams);
+      } else if (contentType.startsWith("application/x-www-form-urlencoded")) {
+        return buildFormUrlEncoded(formParams);
+      } else {
+        return new ByteArrayInputStream(json.serialize(body).getBytes());
+      }
+    });
+
+    if ("GET".equals(method)) {
+      requestBuilder = requestBuilder.GET();
+    } else if ("POST".equals(method)) {
+      requestBuilder = requestBuilder.POST(bodyPublisher);
+    } else if ("PUT".equals(method)) {
+      requestBuilder = requestBuilder.PUT(bodyPublisher);
+    } else if ("DELETE".equals(method)) {
+      requestBuilder = requestBuilder.DELETE();
+    } else if ("PATCH".equals(method)) {
+      requestBuilder = requestBuilder.method("PATCH", bodyPublisher);
+    } else if ("HEAD".equals(method)) {
+      requestBuilder = requestBuilder.method("HEAD", bodyPublisher);
+    } else {
+      throw new ApiException(500, "unknown method type " + method);
+    }
+
+    HttpRequest request = requestBuilder.build();
+
+    try {
+      HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      if (response.statusCode() == 204) { // 204 No Content
+        return null;
+      } else if (response.statusCode() >= 200 && response.statusCode() < 300) { // 2xx successful
+        if (returnType == null) {
+          return null;
+        } else if (returnType.getType() == byte[].class) {
+          // Handle binary response (byte array).
+          try (InputStream responseBody = response.body()) {
+            return (T) responseBody.readAllBytes();
+          } catch (IOException e) {
+            throw new ApiException(e);
+          }
+        } else if (returnType.getType() == File.class) {
+          // Handle file downloading.
+          return (T) downloadFileFromResponse(response);
+        } else {
+          Optional<String> responseContentType = response.headers().firstValue("Content-Type");
+          if (responseContentType.isEmpty()) {
+            throw new ApiException(500, "missing Content-Type in response");
+          }
+
+          try (InputStream responseStream = response.body()) {
+            String content = new String(responseStream.readAllBytes());
+            return json.deserialize(content, returnType);
+          } catch (IOException e) {
+            throw new ApiException(e);
+          }
+        }
+      } else {
+        String message = "error";
+        String respBody = null;
+        try (InputStream responseStream = response.body()) {
+          if (responseStream != null) {
+            respBody = message = new String(responseStream.readAllBytes());
+          }
+        }
+        throw new ApiException(
+              response.statusCode(),
+              message,
+              response.headers().map(),
+              respBody);
+      }
+    } catch (InterruptedException | IOException e) {
+      throw new ApiException(e);
+    }
   }
 
   /**
-   * Deserialize response body to Java object according to the Content-Type.
-   * @param <T> Type
-   * @param response Response
-   * @param returnType Return type
-   * @return Deserialize object
-   * @throws ApiException API exception
+   * Update query and header parameters based on authentication settings.
+   *
+   * @param authNames The authentications to apply
    */
-  @SuppressWarnings("unchecked")
-  public <T> T deserialize(HttpResponse<InputStream> response, TypeReference<T> returnType) throws ApiException {
-    if (response == null || returnType == null) {
-      return null;
+  protected void updateParamsForAuth(String[] authNames, List<Pair> queryParams, Map<String, String> headerParams) {
+    for (String authName : authNames) {
+      Authentication auth = authentications.get(authName);
+      if (auth == null) throw new RuntimeException("Authentication undefined: " + authName);
+      auth.applyToParams(queryParams, headerParams);
     }
+  }
 
-    if (returnType.getType() == byte[].class) {
-      // Handle binary response (byte array).
-      try (InputStream body = response.body()) {
-        return (T) body.readAllBytes();
-      } catch (IOException e) {
-        throw new ApiException(e);
+  private InputStream buildFormUrlEncoded(Map<String, Object> formParams) {
+    String queryString = formParams.entrySet().stream()
+            .filter(e -> e.getValue() != null)
+            .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "="
+                    + URLEncoder.encode(parameterToString(e.getValue()), StandardCharsets.UTF_8))
+            .collect(Collectors.joining("&"));
+    return new ByteArrayInputStream(queryString.getBytes());
+  }
+
+  private InputStream buildMultipart(String boundary, Map<String, Object> formParams) {
+      List<InputStream> multipartStreams = new ArrayList<>(2 + formParams.size() * 2);
+      multipartStreams.add(new ByteArrayInputStream("\r\n".getBytes()));
+      for (Entry<String, Object> param : formParams.entrySet()) {
+          if (param.getValue() instanceof File) {
+              String name = param.getKey();
+              File file = (File) param.getValue();
+              String fileName = file.getName();
+              String contentType = guessContentTypeFromFile(file);
+              String partHeader = "\r\n--" + boundary + "\r\n" +
+                      "Content-Disposition: form-data; name=\"" + name + "\"; filename=\"" + fileName + "\"\r\n" +
+                      "Content-Type: " + contentType + "\r\n\r\n";
+              multipartStreams.add(new ByteArrayInputStream(partHeader.getBytes()));
+              try {
+                multipartStreams.add(new FileInputStream(file));
+              } catch (FileNotFoundException e) {
+                throw new RuntimeException(e);
+              }
+          } else {
+              String name = param.getKey();
+              String partHeader = "\r\n--" + boundary + "\r\n" +
+                      "Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n";
+              multipartStreams.add(new ByteArrayInputStream(partHeader.getBytes()));
+              multipartStreams.add(new ByteArrayInputStream(parameterToString(param.getValue()).getBytes()));
+          }
       }
-    } else if (returnType.getType() == File.class) {
-      // Handle file downloading.
-      return (T) downloadFileFromResponse(response);
-    }
+      multipartStreams.add(new ByteArrayInputStream(("\r\n--" + boundary + "--\r\n\r\n").getBytes()));
+      return new SequenceInputStream(Collections.enumeration(multipartStreams));
+  }
 
-    Optional<String> contentType = response.headers().firstValue("Content-Type");
-    if (contentType.isEmpty()) {
-      throw new ApiException(500, "missing Content-Type in response");
-    }
-
-    try (InputStream responseStream = response.body()) {
-      String content = new String(responseStream.readAllBytes());
-      return json.deserialize(content, returnType);
-    } catch (IOException e) {
-      throw new ApiException(e);
-    }
+  /**
+   * Guess Content-Type header from the given file (defaults to "application/octet-stream").
+   *
+   * @param file The given file
+   * @return The guessed Content-Type
+   */
+  private String guessContentTypeFromFile(File file) {
+    String contentType = URLConnection.guessContentTypeFromName(file.getName());
+    return Objects.requireNonNullElse(contentType, "application/octet-stream");
   }
 
   /**
@@ -420,7 +562,7 @@ public class ApiClient {
    * @return File
    * @throws ApiException If fail to read file content from response and write to disk
    */
-  public File downloadFileFromResponse(HttpResponse<InputStream> response) throws ApiException {
+  private File downloadFileFromResponse(HttpResponse<InputStream> response) throws ApiException {
     try {
       File file = prepareDownloadFile(response);
       try (InputStream body = response.body()) {
@@ -432,7 +574,7 @@ public class ApiClient {
     }
   }
 
-  public File prepareDownloadFile(HttpResponse<InputStream> response) throws IOException {
+  private File prepareDownloadFile(HttpResponse<InputStream> response) throws IOException {
     String filename = null;
     Optional<String> contentDisposition = response.headers().firstValue("Content-Disposition");
     if (contentDisposition.isPresent()) {
@@ -465,116 +607,5 @@ public class ApiClient {
       return File.createTempFile(prefix, suffix);
     else
       return File.createTempFile(prefix, suffix, new File(tempFolderPath));
-  }
-
-  /**
-   * Invoke API by sending HTTP request with the given options.
-   *
-   * @param <T> Type
-   * @param path The sub-path of the HTTP URL
-   * @param method The request method, one of "GET", "POST", "PUT", "HEAD" and "DELETE"
-   * @param queryParams The query parameters
-   * @param body The request body object
-   * @param headerParams The header parameters
-   * @param formParams The form parameters
-   * @param accept The request's Accept header
-   * @param contentType The request's Content-Type header
-   * @param authNames The authentications to apply
-   * @param returnType The return type into which to deserialize the response
-   * @return The response body in type of string
-   * @throws ApiException API exception
-   */
-  public <T> T invokeAPI(String path, String method, List<Pair> queryParams, Object body, Map<String, String> headerParams, Map<String, Object> formParams, String accept, String contentType, String[] authNames, TypeReference<T> returnType) throws ApiException {
-    updateParamsForAuth(authNames, queryParams, headerParams);
-
-    final String queryString;
-    if(queryParams != null) {
-        queryString = queryParams.stream()
-            .filter(e -> e.getValue() != null)
-            .map(e -> e.getName() + "=" + e.getValue())
-            .collect(Collectors.joining("&", "?", ""));
-    } else {
-        queryString = "";
-    }
-
-    URI uri = URI.create(this.basePath + path + queryString);
-    HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(uri);
-
-    for (Entry<String, String> entry : headerParams.entrySet()) {
-      String value = entry.getValue();
-      if (value != null) {
-        requestBuilder = requestBuilder.header(entry.getKey(), value);
-      }
-    }
-
-    for (Entry<String, String> entry : defaultHeaderMap.entrySet()) {
-      String key = entry.getKey();
-      if (!headerParams.containsKey(key)) {
-        String value = entry.getValue();
-        if (value != null) {
-          requestBuilder = requestBuilder.header(key, value);
-        }
-      }
-    }
-
-    HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.ofInputStream(() -> serialize(body, formParams, contentType));
-
-    if ("GET".equals(method)) {
-      requestBuilder = requestBuilder.GET();
-    } else if ("POST".equals(method)) {
-      requestBuilder = requestBuilder.POST(bodyPublisher);
-    } else if ("PUT".equals(method)) {
-      requestBuilder = requestBuilder.PUT(bodyPublisher);
-    } else if ("DELETE".equals(method)) {
-      requestBuilder = requestBuilder.DELETE();
-    } else if ("PATCH".equals(method)) {
-      requestBuilder = requestBuilder.method("PATCH", bodyPublisher);
-    } else if ("HEAD".equals(method)) {
-      requestBuilder = requestBuilder.method("HEAD", bodyPublisher);
-    } else {
-      throw new ApiException(500, "unknown method type " + method);
-    }
-
-    HttpRequest request = requestBuilder.build();
-
-    try {
-      HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-      if (response.statusCode() == 204) { // 204 No Content
-        return null;
-      } else if (response.statusCode() >= 200 && response.statusCode() < 300) { // 2xx successful
-        if (returnType == null)
-          return null;
-        else
-          return deserialize(response, returnType);
-      } else {
-        String message = "error";
-        String respBody = null;
-        try (InputStream responseStream = response.body()) {
-          if (responseStream != null) {
-            respBody = message = new String(responseStream.readAllBytes());
-          }
-        }
-        throw new ApiException(
-              response.statusCode(),
-              message,
-              response.headers().map(),
-              respBody);
-      }
-    } catch (InterruptedException | IOException e) {
-      throw new ApiException(e);
-    }
-  }
-
-  /**
-   * Update query and header parameters based on authentication settings.
-   *
-   * @param authNames The authentications to apply
-   */
-  protected void updateParamsForAuth(String[] authNames, List<Pair> queryParams, Map<String, String> headerParams) {
-    for (String authName : authNames) {
-      Authentication auth = authentications.get(authName);
-      if (auth == null) throw new RuntimeException("Authentication undefined: " + authName);
-      auth.applyToParams(queryParams, headerParams);
-    }
   }
 }
