@@ -268,6 +268,7 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
             additionalProperties.put("jackson", "true");
         } else if ("java11".equals(getLibrary())) {
             supportingFiles.add(new SupportingFile("JSON.mustache", invokerFolder, "JSON.java"));
+            additionalProperties.put("java8", "true");
             additionalProperties.put("java9", "true");
             additionalProperties.put("jackson", "true");
         } else {
@@ -314,7 +315,7 @@ public class JavaClientCodegen extends AbstractJavaCodegen implements BeanValida
 
         if (additionalProperties.containsKey("jackson")) {
             supportingFiles.add(new SupportingFile("RFC3339DateFormat.mustache", invokerFolder, "RFC3339DateFormat.java"));
-            if ("threetenbp".equals(dateLibrary) && !usePlayWS) {
+            if ("threetenbp".equals(dateLibrary) && !usePlayWS && !"java11".equals(getLibrary())) {
                 supportingFiles.add(new SupportingFile("CustomInstantDeserializer.mustache", invokerFolder, "CustomInstantDeserializer.java"));
             }
         }
