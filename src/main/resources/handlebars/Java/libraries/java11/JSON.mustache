@@ -1,0 +1,46 @@
+package {{invokerPackage}};
+
+import com.fasterxml.jackson.annotation.*;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+
+import java.io.IOException;
+import java.text.DateFormat;
+
+{{>generatedAnnotation}}
+public class JSON {
+    protected ObjectMapper mapper;
+
+    public JSON() {
+        mapper = new ObjectMapper();
+        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        mapper.configure(DeserializationFeature.FAIL_ON_INVALID_SUBTYPE, false);
+        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        mapper.enable(SerializationFeature.WRITE_ENUMS_USING_TO_STRING);
+        mapper.enable(DeserializationFeature.READ_ENUMS_USING_TO_STRING);
+        mapper.setDateFormat(new RFC3339DateFormat());
+        mapper.registerModule(new JavaTimeModule());
+    }
+
+    public String serialize(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public <T> T deserialize(String content, TypeReference<T> type) {
+        try {
+            return mapper.readValue(content, type);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public ObjectMapper getMapper() {
+        return mapper;
+    }
+}
